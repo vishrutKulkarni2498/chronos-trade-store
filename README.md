@@ -1,7 +1,5 @@
 # Chronos Trade Store
 
-[![CI](https://github.com/<your-username>/<your-repo>/actions/workflows/ci.yml/badge.svg)](https://github.com/<your-username>/<your-repo>/actions/workflows/ci.yml)
-
 A resilient Python REST API trade store enforcing versioning rules, maturity date validations, and scheduled auto-expiry with DevSecOps CI/CD pipelines. It was developed using **Test-Driven Development (TDD)** and ships with a **GitHub Actions** pipeline that runs regression tests and an **open-source vulnerability scan** which fails the build on critical vulnerabilities.
 
 ---
