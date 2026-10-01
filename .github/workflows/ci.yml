@@ -48,7 +48,7 @@ jobs:
 
       # Informational: list HIGH findings in the log without failing the build.
       - name: Trivy scan (HIGH, report only)
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@master #
         with:
           scan-type: fs
           scan-ref: .
@@ -60,7 +60,7 @@ jobs:
 
       # Gate: any CRITICAL vulnerability fails the build.
       - name: Trivy scan (CRITICAL, fails the build)
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@master #
         with:
           scan-type: fs
           scan-ref: .
