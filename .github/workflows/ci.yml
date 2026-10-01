@@ -28,7 +28,7 @@ jobs:
           cache-dependency-path: requirements*.txt
 
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+        run: pip install -r requirements.txt
 
       - name: Run tests with coverage (fails below 90%)
         run: pytest --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=90
@@ -48,7 +48,7 @@ jobs:
 
       # Informational: list HIGH findings in the log without failing the build.
       - name: Trivy scan (HIGH, report only)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -60,7 +60,7 @@ jobs:
 
       # Gate: any CRITICAL vulnerability fails the build.
       - name: Trivy scan (CRITICAL, fails the build)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           scan-type: fs
           scan-ref: .
