@@ -67,15 +67,6 @@ def create_app(
 
     app = FastAPI(title="Chronos Trade Store", version="1.0.0", lifespan=lifespan)
 
-    # Enable CORS for the frontend
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],  # Replace "*" with your GitHub Pages URL in production
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
     def get_service():
         session = session_factory()
         try:
