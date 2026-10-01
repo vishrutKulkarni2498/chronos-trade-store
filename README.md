@@ -1,6 +1,6 @@
 # Trade Store
 
-[![CI](https://github.com/<your-username>/<your-repo>/actions/workflows/ci.yml/badge.svg)](https://github.com/<your-username>/<your-repo>/actions/workflows/ci.yml)
+[![CI](https://github.com/vishrutKulkarni2498/chronos-trade-store/actions/workflows/ci.yml/badge.svg)](https://github.com/vishrutKulkarni2498/chronos-trade-store/actions/workflows/ci.yml)
 
 A REST API, built in Python, that receives trades, validates them against business rules, and stores them in a database. It was developed using **Test-Driven Development (TDD)** and ships with a **GitHub Actions** pipeline that runs regression tests and an **open-source vulnerability scan** which fails the build on critical vulnerabilities.
 
