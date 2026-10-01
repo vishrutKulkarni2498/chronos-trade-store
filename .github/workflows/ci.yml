@@ -70,11 +70,40 @@ jobs:
           ignore-unfixed: true
           format: table
 
+  # docker-build:
+  #   name: Docker build
+  #   needs: [test, vulnerability-scan]
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Build image
+  #       run: docker build -t trade-store:${{ github.sha }} .
   docker-build:
     name: Docker build
     needs: [test, vulnerability-scan]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # 1. Generate a timestamp and store it as an environment variable
+      - name: Generate timestamp
+        id: time
+        run: echo "TIMESTAMP=$(date +'%Y%m%d_%H%M%S')" >> $GITHUB_ENV
+
+      # 2. Build the Docker image
       - name: Build image
         run: docker build -t trade-store:${{ github.sha }} .
+
+      # 3. Create the directory and save the image as a .tar file
+      - name: Save Docker image to folder
+        run: |
+          mkdir -p docker-builds
+          docker save trade-store:${{ github.sha }} -o docker-builds/trade-store_${{ env.TIMESTAMP }}.tar
+
+      # 4. Upload the folder as a GitHub artifact so it can be downloaded
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trade-store-image-${{ env.TIMESTAMP }}
+          path: docker-builds/
+          retention-days: 7 # Optional: Auto-delete after 7 days to save storage
