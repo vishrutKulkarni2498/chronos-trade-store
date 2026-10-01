@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chronos Trade Store | Ledger</title>
+    <style>
+        :root {
+            --bg-deep-blue: #0A1128;
+            --panel-bg: #111D4A;
+            --border-color: #1E3163;
+            --text-primary: #E0E7FF;
+            --text-secondary: #93A5CF;
+            --accent-cyan: #00D4FF;
+            --row-hover: #16265C;
+            --danger: #FF4D4D;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-deep-blue);
+            color: var(--text-primary);
+            margin: 0;
+            padding: 20px;
+            font-size: 13px; /* High information density */
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+
+        .header h1 {
+            font-size: 1.5rem;
+            color: var(--accent-cyan);
+            margin: 0;
+            font-weight: 600;
+            letter-spacing: 1px;
+        }
+
+        /* Filter Dashboard */
+        .controls {
+            display: flex;
+            gap: 15px;
+            background: var(--panel-bg);
+            padding: 15px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            margin-bottom: 20px;
+            align-items: flex-end;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .control-group label {
+            color: var(--text-secondary);
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 11px;
+        }
+
+        input[type="text"], select {
+            background: var(--bg-deep-blue);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 8px;
+            border-radius: 3px;
+            outline: none;
+            width: 150px;
+        }
+
+        input[type="text"]:focus, select:focus {
+            border-color: var(--accent-cyan);
+        }
+
+        button {
+            background: var(--accent-cyan);
+            color: var(--bg-deep-blue);
+            border: none;
+            padding: 8px 16px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: opacity 0.2s;
+        }
+
+        button:hover { opacity: 0.8; }
+        button:disabled { background: var(--border-color); color: var(--text-secondary); cursor: not-allowed; }
+
+        /* Data Grid */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--panel-bg);
+            border: 1px solid var(--border-color);
+        }
+
+        th, td {
+            padding: 10px 15px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        th {
+            background: #0D173A;
+            color: var(--accent-cyan);
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 11px;
+        }
+
+        tr:hover { background: var(--row-hover); }
+
+        .badge-expired {
+            background: var(--danger);
+            color: white;
+            padding: 2px 6px;
+            border-radius: 2px;
+            font-size: 10px;
+            font-weight: bold;
+        }
+        
+        .badge-active {
+            background: #22C55E;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 2px;
+            font-size: 10px;
+            font-weight: bold;
+        }
+
+        /* Pagination */
+        .pagination {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 15px;
+            color: var(--text-secondary);
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <h1>CHRONOS :: TRADE VAULT</h1>
+        <div id="connection-status">Connecting to API...</div>
+    </div>
+
+    <div class="controls">
+        <div class="control-group">
+            <label for="cp-filter">Counter-Party ID</label>
+            <input type="text" id="cp-filter" placeholder="e.g. CP-1">
+        </div>
+        <div class="control-group">
+            <label for="port-filter">Portfolio ID</label>
+            <input type="text" id="port-filter" placeholder="e.g. B1">
+        </div>
+        <div class="control-group">
+            <label for="expired-filter">Status</label>
+            <select id="expired-filter">
+                <option value="">All Trades</option>
+                <option value="false">Active Only</option>
+                <option value="true">Expired Only</option>
+            </select>
+        </div>
+        <button onclick="applyFilters()">Query Ledger</button>
+        <button onclick="resetFilters()" style="background: var(--border-color); color: var(--text-primary);">Reset</button>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Trade ID</th>
+                <th>Version</th>
+                <th>Counter-Party</th>
+                <th>Portfolio</th>
+                <th>Created Date</th>
+                <th>Maturity Date</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody id="trade-table-body">
+            <!-- Rows injected via JS -->
+        </tbody>
+    </table>
+</div>
+
+<script>
+    // Configuration
+    const API_BASE_URL = 'http://localhost:8000'; // Update this when backend is deployed
+
+    async function fetchTrades() {
+        const cp = document.getElementById('cp-filter').value;
+        const port = document.getElementById('port-filter').value;
+        const exp = document.getElementById('expired-filter').value;
+
+        // Construct query parameters (without skip/limit)
+        const params = new URLSearchParams();
+        if (cp) params.append('counter_party_id', cp);
+        if (port) params.append('portfolio_id', port);
+        if (exp !== "") params.append('expired', exp);
+
+        try {
+            document.getElementById('connection-status').innerText = 'Fetching...';
+            document.getElementById('connection-status').style.color = 'var(--text-secondary)';
+            
+            // If no params, don't append the ?
+            const queryStr = params.toString() ? `?${params.toString()}` : '';
+            const response = await fetch(`${API_BASE_URL}/trades${queryStr}`);
+            
+            if (!response.ok) throw new Error('Network response was not ok');
+            
+            // The unpaginated API returns a direct array, so 'data' is the list of trades
+            const data = await response.json();
+            renderTable(data);
+            
+            document.getElementById('connection-status').innerText = 'API Connected (Live)';
+            document.getElementById('connection-status').style.color = 'var(--accent-cyan)';
+        } catch (error) {
+            console.error('Error fetching trades:', error);
+            document.getElementById('connection-status').innerText = 'API Offline';
+            document.getElementById('connection-status').style.color = 'var(--danger)';
+            renderTable([]); // Clear table on error
+        }
+    }
+
+    function renderTable(trades) {
+        const tbody = document.getElementById('trade-table-body');
+        tbody.innerHTML = '';
+
+        if (!trades || trades.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-secondary);">No trades found matching criteria.</td></tr>';
+            return;
+        }
+
+        trades.forEach(trade => {
+            const statusBadge = trade.expired 
+                ? '<span class="badge-expired">EXPIRED</span>' 
+                : '<span class="badge-active">ACTIVE</span>';
+
+            const row = `<tr>
+                <td style="font-family: monospace; color: var(--accent-cyan);">${trade.trade_id}</td>
+                <td>v${trade.version}</td>
+                <td>${trade.counter_party_id}</td>
+                <td>${trade.portfolio_id}</td>
+                <td>${trade.created_date}</td>
+                <td>${trade.maturity_date}</td>
+                <td>${statusBadge}</td>
+            </tr>`;
+            tbody.insertAdjacentHTML('beforeend', row);
+        });
+    }
+
+    function applyFilters() {
+        fetchTrades();
+    }
+
+    function resetFilters() {
+        document.getElementById('cp-filter').value = '';
+        document.getElementById('port-filter').value = '';
+        document.getElementById('expired-filter').value = '';
+        fetchTrades();
+    }
+
+    // Initial load
+    fetchTrades();
+</script>
+
+</body>
+</html>

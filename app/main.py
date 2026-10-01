@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Body, Depends, FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import sessionmaker
@@ -64,7 +65,16 @@ def create_app(
             if scheduler is not None:
                 scheduler.shutdown(wait=False)
 
-    app = FastAPI(title="Trade Store", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(title="Chronos Trade Store", version="1.0.0", lifespan=lifespan)
+
+    # Enable CORS for the frontend
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Replace "*" with your GitHub Pages URL in production
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     def get_service():
         session = session_factory()
