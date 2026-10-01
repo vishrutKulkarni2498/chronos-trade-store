@@ -1,6 +1,8 @@
-# Chronos Trade Store
+# Trade Store
 
-A resilient Python REST API trade store enforcing versioning rules, maturity date validations, and scheduled auto-expiry with DevSecOps CI/CD pipelines. It was developed using **Test-Driven Development (TDD)** and ships with a **GitHub Actions** pipeline that runs regression tests and an **open-source vulnerability scan** which fails the build on critical vulnerabilities.
+[![CI](https://github.com/<your-username>/<your-repo>/actions/workflows/ci.yml/badge.svg)](https://github.com/<your-username>/<your-repo>/actions/workflows/ci.yml)
+
+A REST API, built in Python, that receives trades, validates them against business rules, and stores them in a database. It was developed using **Test-Driven Development (TDD)** and ships with a **GitHub Actions** pipeline that runs regression tests and an **open-source vulnerability scan** which fails the build on critical vulnerabilities.
 
 ---
 
@@ -67,7 +69,7 @@ The brief leaves some points open. The interpretations below were chosen deliber
 | **A6** | How expiry is applied | Two mechanisms work together. (1) A **scheduled job** persists `expired = true` for matured trades. (2) The `expired` flag is also **derived at read time** from the maturity date. | The job satisfies "automatically mark". Read-time derivation guarantees correct results between job runs. |
 | **A7** | Sample row `T3` | `T3` has a past maturity date and `Expired = Y`. It would be rejected on ingestion under R3, so it is treated as **illustrative**, representing a trade that expired after being stored. | Rules R3 and the sample data can't both apply at insertion time. |
 | **A8** | "Today" | "Today" means the **current date in UTC**. The clock is **injected** so tests can control it. | Removes timezone ambiguity and makes date tests deterministic. |
-| **A9** | Created date | `created_date` is **set by the server** at receipt time, not supplied by the client. | The sample shows `<today date>` for new trades. Trusting a client-supplied audit date is unsafe. When a same-version trade replaces a record, `created_date` is preserved from the original. |
+| **A9** | Created date | `created_date` (and `expired`) are **set by the server** at receipt time. If a client sends them, they are **ignored**. | The sample shows `<today date>` for new trades. Trusting a client-supplied audit date is unsafe. When a same-version trade replaces a record, `created_date` is preserved from the original. |
 | **A10** | Date format | The API accepts and returns **ISO 8601** (`YYYY-MM-DD`). The `dd/MM/yyyy` format in the brief is a presentation format only. | ISO 8601 is unambiguous and a standard for APIs. |
 | **A11** | Field validation | `trade_id`, `counter_party_id`, and `portfolio_id` are **required, non-empty strings**. `version` is a **positive integer** (≥ 1). `maturity_date` is a valid date. | Invalid input should fail fast with a clear error. |
 | **A12** | "Version: 1.1" in the brief | Refers to the version of the **case study document**, not a trade attribute. | Not part of the trade schema. |
@@ -75,6 +77,7 @@ The brief leaves some points open. The interpretations below were chosen deliber
 | **A14** | Persistence | **SQL** (SQLAlchemy). **SQLite** is the default for local runs and tests. Any SQLAlchemy-supported database (for example PostgreSQL) can be used via configuration. | The composite key and version queries suit a relational model. |
 | **A15** | Concurrency | Uniqueness of (`trade_id`, `version`) is enforced by a **database constraint**, and writes occur inside a **transaction**. | Prevents duplicate rows if two identical requests arrive at the same moment. |
 | **A16** | Authentication | **Not implemented.** The API is open. | Out of scope for this assignment. See [Future Improvements](#16-future-improvements). |
+| **A17** | Order of validation | Input validation runs first, then the **maturity date check**, then the **version check**. If a trade breaks both R3 and R1, the maturity error (422) is reported. | The maturity check needs no database access, so it is cheap to do first. The order is fixed and covered by a test. |
 
 ---
 
@@ -146,7 +149,7 @@ Scheduler ──► Service layer (expire matured trades)
 | `expired` | boolean | Persisted by the scheduler, also derived at read time |
 
 - **Primary key:** (`trade_id`, `version`)
-- **Index:** on `trade_id` (fast lookup of the highest version)
+- **Index:** the composite primary key also indexes `trade_id` (it is the leading column), which keeps the "highest version" lookup fast
 - **Index:** on `maturity_date` (efficient expiry sweep)
 
 ---
@@ -237,7 +240,7 @@ cd <your-repo>
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # runtime + test dependencies
 ```
 
 ### Run the API
@@ -254,6 +257,7 @@ The API is available at `http://localhost:8000`.
 |----------|---------|-------------|
 | `DATABASE_URL` | `sqlite:///./trades.db` | SQLAlchemy connection string |
 | `EXPIRY_JOB_INTERVAL_MINUTES` | `60` | How often the expiry job runs |
+| `ENABLE_SCHEDULER` | `true` | Set to `false` to disable the background expiry job |
 
 ### Run with Docker
 
@@ -287,7 +291,7 @@ pytest --cov=app --cov-report=term-missing
 pytest --cov=app --cov-fail-under=90
 ```
 
-The tests use an isolated in-memory database and a frozen clock (`freezegun`), so they are deterministic and independent of the current date.
+The tests use an isolated in-memory database and an **injected clock**, so they are deterministic and independent of the current date. `freezegun` is used to verify the real UTC clock, including the midnight rollover.
 
 ### Test coverage of the business rules
 
@@ -305,6 +309,10 @@ The tests use an isolated in-memory database and a frozen clock (`freezegun`), s
 | Expiry job leaves non-matured trades untouched | R4 |
 | Trade maturing today is not expired, and is expired the next day | A5 |
 | `expired` is correct at read time before the job runs | A6 |
+| Maturity error takes precedence over version error | A17 |
+| Client-supplied `created_date` / `expired` are ignored | A9 |
+| UTC clock returns the UTC date and rolls over at midnight | A8 |
+| Duplicate key at the repository raises and leaves the session usable | A15 |
 | Missing or empty fields are rejected | A11 |
 | Invalid version (0, negative) and invalid date are rejected | A11 |
 | HTTP status codes map correctly (200, 201, 404, 409, 422) | API contract |
@@ -328,7 +336,7 @@ feat: raise LowerVersionError for lower versions (green)
 refactor: extract version lookup into repository
 ```
 
-Build order: domain rules and service tests, then the repository, then API endpoints, then the scheduler, then the pipeline.
+Build order: schema and service rule tests first, then the repository, then API endpoints, then the scheduler, then the pipeline.
 
 ---
 
@@ -338,8 +346,8 @@ The pipeline is defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 
 | Stage | Purpose | Fails the build when |
 |-------|---------|----------------------|
-| **1. Checkout and set up Python** | Prepare the environment | Setup fails |
-| **2. Install dependencies** | Reproducible install from `requirements.txt` | Install fails |
+| **1. Checkout and set up Python** | Prepare the environment (Python 3.11 and 3.12 matrix) | Setup fails |
+| **2. Install dependencies** | Pinned install from `requirements-dev.txt` | Install fails |
 | **3. Regression tests** | Run the full pytest suite with coverage | Any test fails, or coverage is below 90% |
 | **4. Vulnerability scan** | Scan dependencies for known OSS vulnerabilities | Any **CRITICAL** vulnerability is found |
 | **5. Docker build** | Verify the image builds | Build fails |
@@ -357,15 +365,18 @@ Because the whole suite runs on every change, it acts as an automated **regressi
 Relevant configuration:
 
 ```yaml
-- name: OSS vulnerability scan
-  uses: aquasecurity/trivy-action@master
+- name: Trivy scan (CRITICAL, fails the build)
+  uses: aquasecurity/trivy-action@0.28.0   # pinned, not @master
   with:
     scan-type: fs
     scan-ref: .
+    scanners: vuln
     severity: CRITICAL
-    exit-code: 1
+    exit-code: "1"
     ignore-unfixed: true
 ```
+
+A preceding step lists `HIGH` findings in the log without failing the build, for visibility.
 
 Notes:
 
@@ -400,23 +411,32 @@ To render them, use the PlantUML VS Code extension, or paste the source into [pl
 ```
 trade-store/
 ├── app/
-│   ├── main.py            # FastAPI app and route wiring
-│   ├── models.py          # SQLAlchemy models
+│   ├── main.py            # FastAPI app factory and routes
+│   ├── config.py          # Environment-based configuration
+│   ├── database.py        # Engine construction
+│   ├── models.py          # SQLAlchemy model
+│   ├── domain.py          # Trade domain object
 │   ├── schemas.py         # Pydantic request/response schemas
 │   ├── repository.py      # Database access
 │   ├── services.py        # Business rules
 │   ├── exceptions.py      # Domain exceptions
-│   ├── clock.py           # Injectable clock
+│   ├── clock.py           # Injectable UTC clock
 │   └── scheduler.py       # Expiry job
 ├── tests/
-│   ├── test_services.py
+│   ├── conftest.py        # Fixtures, fake clock
+│   ├── test_clock.py
+│   ├── test_schemas.py
 │   ├── test_repository.py
-│   ├── test_api.py
-│   └── test_scheduler.py
+│   ├── test_services.py
+│   ├── test_scheduler.py
+│   └── test_api.py
 ├── docs/                  # PlantUML diagrams
 ├── .github/workflows/ci.yml
 ├── Dockerfile
-├── requirements.txt
+├── requirements.txt       # Runtime dependencies (pinned)
+├── requirements-dev.txt   # Test dependencies
+├── pytest.ini
+├── .trivyignore           # Justified vulnerability suppressions (empty by default)
 └── README.md
 ```
 
@@ -446,4 +466,4 @@ trade-store/
 
 ## Author
 
-`Vishrut Kulkarni`, `vishrutkulkarni1002@gmail.com`
+`Vishrut Kulkarni`

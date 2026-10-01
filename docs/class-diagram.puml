@@ -1,0 +1,93 @@
+@startuml class-diagram
+title Trade Store: classes
+
+package "API layer" {
+  class "FastAPI app" as App {
+    +POST /trades
+    +POST /trades/bulk
+    +GET /trades
+    +GET /trades/{trade_id}
+    +GET /trades/{trade_id}/versions/{version}
+    +GET /health
+  }
+  class TradeCreate <<schema>> {
+    +trade_id: str
+    +version: int
+    +counter_party_id: str
+    +portfolio_id: str
+    +maturity_date: date
+  }
+  class TradeOut <<schema>>
+}
+
+package "Service layer" {
+  class TradeService {
+    -clock: Clock
+    +submit_trade(data): (Trade, bool)
+    +get_versions(trade_id): list[Trade]
+    +get_trade(trade_id, version): Trade
+    +list_trades(expired): list[Trade]
+    +expire_matured_trades(): int
+  }
+  class Trade <<domain>> {
+    +trade_id: str
+    +version: int
+    +counter_party_id: str
+    +portfolio_id: str
+    +maturity_date: date
+    +created_date: date
+    +expired: bool
+  }
+}
+
+package "Persistence layer" {
+  class TradeRepository {
+    +get(trade_id, version)
+    +max_version(trade_id)
+    +list_versions(trade_id)
+    +list_all(today, expired)
+    +add(trade)
+    +replace(trade, ...)
+    +mark_expired(today): int
+  }
+  class TradeModel <<table: trades>> {
+    +trade_id: str {PK}
+    +version: int {PK}
+    +counter_party_id: str
+    +portfolio_id: str
+    +maturity_date: date
+    +created_date: date
+    +expired: bool
+  }
+}
+
+class ExpiryScheduler {
+  +run_expiry_job()
+  +start_scheduler(interval)
+}
+
+package "Exceptions" {
+  class TradeStoreError
+  class LowerVersionError
+  class PastMaturityDateError
+  class TradeNotFoundError
+  class DuplicateTradeError
+}
+
+App ..> TradeCreate : validates
+App ..> TradeOut : returns
+App --> TradeService
+TradeService --> TradeRepository
+TradeService ..> Trade : creates
+TradeRepository --> TradeModel
+ExpiryScheduler --> TradeService
+
+TradeStoreError <|-- LowerVersionError
+TradeStoreError <|-- PastMaturityDateError
+TradeStoreError <|-- TradeNotFoundError
+TradeStoreError <|-- DuplicateTradeError
+TradeService ..> LowerVersionError : throws (409)
+TradeService ..> PastMaturityDateError : throws (422)
+TradeService ..> TradeNotFoundError : throws (404)
+TradeRepository ..> DuplicateTradeError : throws
+@enduml

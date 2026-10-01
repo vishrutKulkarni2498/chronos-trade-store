@@ -1,0 +1,44 @@
+@startuml sequence-submit-trade
+title Submit a trade (POST /trades)
+
+actor Client
+participant "API\n(FastAPI)" as API
+participant TradeService as Service
+participant TradeRepository as Repo
+database Database as DB
+
+Client -> API : POST /trades (trade JSON)
+API -> API : validate payload (TradeCreate)
+
+alt invalid payload
+  API --> Client : 422 Unprocessable Entity
+else valid payload
+  API -> Service : submit_trade(trade)
+  Service -> Service : today = clock()
+
+  alt maturity_date < today (R3)
+    Service --> API : PastMaturityDateError
+    API --> Client : 422 Unprocessable Entity
+  else maturity_date >= today
+    Service -> Repo : max_version(trade_id)
+    Repo -> DB : SELECT MAX(version)
+    DB --> Repo : max_version or none
+    Repo --> Service : max_version or none
+
+    alt incoming version < max_version (R1)
+      Service --> API : LowerVersionError
+      API --> Client : 409 Conflict
+    else same version already stored (R2)
+      Service -> Repo : replace(existing, new values)
+      Repo -> DB : UPDATE + COMMIT
+      Service --> API : (trade, created = false)
+      API --> Client : 200 OK
+    else new trade or higher version
+      Service -> Repo : add(new trade)
+      Repo -> DB : INSERT + COMMIT
+      Service --> API : (trade, created = true)
+      API --> Client : 201 Created
+    end
+  end
+end
+@enduml

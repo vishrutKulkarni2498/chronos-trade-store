@@ -1,0 +1,17 @@
+@startuml state-trade-lifecycle
+title Trade lifecycle
+
+[*] --> Rejected : maturity_date < today (R3)\nor version < stored max (R1)
+[*] --> Active : valid trade accepted\n(new trade or higher version)
+
+Active --> Active : same version received (R2)\nrecord replaced
+Active --> Expired : maturity_date < today (R4)\nmarked by scheduled job,\nand derived at read time (A6)
+
+Rejected --> [*]
+Expired --> [*]
+
+note right of Active
+  Maturing today is still Active (A4, A5).
+  It becomes Expired the following day.
+end note
+@enduml
