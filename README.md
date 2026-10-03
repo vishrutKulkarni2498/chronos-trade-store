@@ -4,6 +4,16 @@
 
 A REST API, built in Python, that receives trades, validates them against business rules, and stores them in a database. It was developed using **Test-Driven Development (TDD)** and ships with a **GitHub Actions** pipeline that runs regression tests and an **open-source vulnerability scan** which fails the build on critical vulnerabilities.
 
+**At a glance**
+
+- Enforces the trade rules: lower versions rejected, same versions replaced, past maturity dates rejected, matured trades marked as expired
+- Keeps the full version history of every trade
+- Single-trade and bulk submission endpoints, plus read endpoints with an expired filter
+- Background expiry job with a **status endpoint** that shows the next run, the last run, and run totals (in UTC and IST)
+- Business rules independent of HTTP, so other transports can reuse them
+- Sample trades in `test_data/` for trying the API quickly
+- Automated tests, coverage gate, vulnerability gate, and a Docker build in CI
+
 ---
 
 ## Table of Contents
@@ -16,14 +26,15 @@ A REST API, built in Python, that receives trades, validates them against busine
 6. [Data Model](#6-data-model)
 7. [API Reference](#7-api-reference)
 8. [Getting Started](#8-getting-started)
-9. [Running the Tests](#9-running-the-tests)
-10. [Test-Driven Development Approach](#10-test-driven-development-approach)
-11. [CI/CD Pipeline](#11-cicd-pipeline)
-12. [Vulnerability Scanning](#12-vulnerability-scanning)
-13. [Diagrams (PlantUML)](#13-diagrams-plantuml)
-14. [Project Structure](#14-project-structure)
-15. [Known Limitations](#15-known-limitations)
-16. [Future Improvements](#16-future-improvements)
+9. [Sample Test Data](#9-sample-test-data)
+10. [Running the Tests](#10-running-the-tests)
+11. [Test-Driven Development Approach](#11-test-driven-development-approach)
+12. [CI/CD Pipeline](#12-cicd-pipeline)
+13. [Vulnerability Scanning](#13-vulnerability-scanning)
+14. [Diagrams (PlantUML)](#14-diagrams-plantuml)
+15. [Project Structure](#15-project-structure)
+16. [Known Limitations](#16-known-limitations)
+17. [Future Improvements](#17-future-improvements)
 
 ---
 
@@ -75,9 +86,10 @@ The brief leaves some points open. The interpretations below were chosen deliber
 | **A12** | "Version: 1.1" in the brief | Refers to the version of the **case study document**, not a trade attribute. | Not part of the trade schema. |
 | **A13** | "Any method of transmission" | The business logic lives in a **service layer independent of transport**. REST is the entry point implemented here, and a bulk endpoint supports high-volume ingestion. Other transports (a queue consumer, file loader) could call the same service. | Keeps the rules in one place regardless of how trades arrive. |
 | **A14** | Persistence | **SQL** (SQLAlchemy). **SQLite** is the default for local runs and tests. Any SQLAlchemy-supported database (for example PostgreSQL) can be used via configuration. | The composite key and version queries suit a relational model. |
-| **A15** | Concurrency | Uniqueness of (`trade_id`, `version`) is enforced by a **database constraint**, and writes occur inside a **transaction**. | Prevents duplicate rows if two identical requests arrive at the same moment. |
-| **A16** | Authentication | **Not implemented.** The API is open. | Out of scope for this assignment. See [Future Improvements](#16-future-improvements). |
+| **A15** | Concurrency | Uniqueness of (`trade_id`, `version`) is enforced by a **database constraint**, and writes occur inside a **transaction**. | Prevents duplicate rows if two identical requests arrive at the same moment. See also [Known Limitations](#16-known-limitations). |
+| **A16** | Authentication | **Not implemented.** The API is open. | Out of scope for this assignment. See [Future Improvements](#17-future-improvements). |
 | **A17** | Order of validation | Input validation runs first, then the **maturity date check**, then the **version check**. If a trade breaks both R3 and R1, the maturity error (422) is reported. | The maturity check needs no database access, so it is cheap to do first. The order is fixed and covered by a test. |
+| **A18** | Time zones in the scheduler status | Times are stored and computed in **UTC**. The `/scheduler/status` response also shows an **IST** (UTC+05:30) equivalent beside each time, as `*_ist` fields. IST is a **fixed offset** and is added only when building the response. | UTC stays the single source of truth, and IST is there for readability. India has no daylight saving, so a fixed offset is exact, and it avoids needing a system time zone database (Windows has none by default). |
 
 ---
 
@@ -102,7 +114,7 @@ The brief leaves some points open. The interpretations below were chosen deliber
 The code is split into layers so business rules stay independent of HTTP and the database.
 
 ```
-Client ──► API layer (FastAPI routes, request/response schemas)
+Client ──► API layer (FastAPI routers, request/response schemas)
               │
               ▼
           Service layer (business rules R1–R4, clock injected)
@@ -114,14 +126,18 @@ Client ──► API layer (FastAPI routes, request/response schemas)
           Database (SQLite / PostgreSQL)
 
 Scheduler ──► Service layer (expire matured trades)
+    │
+    └──► Monitor (records each run) ──► GET /scheduler/status
 ```
 
 | Layer | Responsibility |
 |-------|----------------|
-| **API** | HTTP concerns: routing, status codes, mapping domain exceptions to HTTP errors |
+| **API** | HTTP concerns, split into three routers (submit, read, scheduler): routing, status codes, mapping domain exceptions to HTTP errors |
 | **Service** | All business validation: version rules, maturity rules, expiry |
 | **Repository** | Persistence only, with no business logic |
-| **Scheduler** | Periodically triggers the expiry operation in the service layer |
+| **Scheduler** | Periodically triggers the expiry operation in the service layer, and records the outcome of every run |
+
+`app/main.py` only wires the application together (configuration, persistence, scheduler lifecycle, error handling, routers). The endpoints live in `app/routers/`, one module per section, and the same sections appear as groups in the Swagger UI.
 
 ### Exceptions
 
@@ -152,16 +168,32 @@ Scheduler ──► Service layer (expire matured trades)
 - **Index:** the composite primary key also indexes `trade_id` (it is the leading column), which keeps the "highest version" lookup fast
 - **Index:** on `maturity_date` (efficient expiry sweep)
 
+Scheduler run history is **not** stored in the database. It is kept in memory (see [`GET /scheduler/status`](#get-schedulerstatus-expiry-scheduler-status)).
+
 ---
 
 ## 7. API Reference
+
+Endpoints are grouped into four sections, which also appear as groups in the Swagger UI: **Submit trades**, **Read trades**, **Scheduler** and **System**.
 
 Interactive documentation is generated automatically when the app is running:
 
 - Swagger UI: `http://localhost:8000/docs`
 - ReDoc: `http://localhost:8000/redoc`
 
-### `POST /trades`: submit a trade
+| Section | Method and path | Purpose |
+|---------|-----------------|---------|
+| Submit trades | `POST /trades` | Submit one trade |
+| Submit trades | `POST /trades/bulk` | Submit many trades |
+| Read trades | `GET /trades` | List trades (optional `?expired=true\|false`) |
+| Read trades | `GET /trades/{trade_id}` | All versions of one trade |
+| Read trades | `GET /trades/{trade_id}/versions/{version}` | One specific version |
+| Scheduler | `GET /scheduler/status` | Expiry scheduler status |
+| System | `GET /health` | Health check |
+
+### Section: Submit trades
+
+#### `POST /trades`: submit a trade
 
 **Request**
 ```json
@@ -191,7 +223,7 @@ Interactive documentation is generated automatically when the app is running:
   "counter_party_id": "CP-1",
   "portfolio_id": "B1",
   "maturity_date": "2030-05-20",
-  "created_date": "2026-09-30",
+  "created_date": "2026-10-03",
   "expired": false
 }
 ```
@@ -201,23 +233,96 @@ Interactive documentation is generated automatically when the app is running:
 { "detail": "Trade T2 version 1 is lower than existing version 2." }
 ```
 
-### `POST /trades/bulk`: submit many trades
+#### `POST /trades/bulk`: submit many trades
 
-Accepts a JSON array of trades. Each trade is validated independently, and the response reports per-trade results (accepted or rejected with a reason), so one bad trade doesn't block the rest.
+Accepts a JSON array of trades. Each trade is validated independently, and the response reports per-trade results (`created`, `replaced` or `rejected` with a reason), so one bad trade doesn't block the rest. The HTTP status is `200` as long as the request itself is a valid array.
 
-### `GET /trades`: list trades
+**Response (example)**
+```json
+{
+  "summary": { "total": 3, "created": 1, "replaced": 1, "rejected": 1 },
+  "results": [
+    { "index": 0, "trade_id": "T1", "version": 1, "status": "created", "detail": null },
+    { "index": 1, "trade_id": "T1", "version": 1, "status": "replaced", "detail": null },
+    {
+      "index": 2,
+      "trade_id": "T2",
+      "version": 1,
+      "status": "rejected",
+      "detail": "Trade T2 version 1 is lower than existing version 2."
+    }
+  ]
+}
+```
 
-Returns all stored trades, ordered by `trade_id` then `version`. Optional filter: `?expired=true|false`.
+Trades in a bulk request are processed in order, so a later trade is checked against the earlier ones in the same request.
 
-### `GET /trades/{trade_id}`: list all versions of a trade
+### Section: Read trades
+
+#### `GET /trades`: list trades
+
+Returns all stored trades, ordered by `trade_id` then `version`. Optional filter: `?expired=true|false`. The filter uses the same read-time rule as the `expired` field, so it is correct even before the scheduled job has run.
+
+#### `GET /trades/{trade_id}`: list all versions of a trade
 
 Returns every stored version. `404` if the trade doesn't exist.
 
-### `GET /trades/{trade_id}/versions/{version}`: get one version
+#### `GET /trades/{trade_id}/versions/{version}`: get one version
 
 Returns a single (`trade_id`, `version`). `404` if not found.
 
-### `GET /health`: health check
+### Section: Scheduler
+
+#### `GET /scheduler/status`: expiry scheduler status
+
+Reports whether the background expiry job is enabled and running, when it will next run, and how past runs went.
+
+```json
+{
+  "enabled": true,
+  "running": true,
+  "interval_minutes": 60,
+  "job_id": "expire-matured-trades",
+  "current_time_utc": "2026-10-03T12:40:00Z",
+  "current_time_ist": "2026-10-03T18:10:00+05:30",
+  "next_run_time": "2026-10-03T13:00:00Z",
+  "next_run_time_ist": "2026-10-03T18:30:00+05:30",
+  "last_run": {
+    "trigger": "schedule",
+    "started_at": "2026-10-03T12:00:00.012Z",
+    "started_at_ist": "2026-10-03T17:30:00.012+05:30",
+    "finished_at": "2026-10-03T12:00:00.031Z",
+    "finished_at_ist": "2026-10-03T17:30:00.031+05:30",
+    "duration_ms": 19,
+    "success": true,
+    "trades_expired": 3,
+    "error": null
+  },
+  "totals": { "runs": 5, "failures": 0, "trades_expired": 7 }
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `enabled` | Whether the scheduler was switched on (`ENABLE_SCHEDULER`) |
+| `running` | Whether the scheduler is alive right now |
+| `interval_minutes` | How often the job runs (`EXPIRY_JOB_INTERVAL_MINUTES`) |
+| `current_time_utc` / `current_time_ist` | The server's current time, in UTC and in IST |
+| `next_run_time` / `next_run_time_ist` | Next scheduled run in UTC and IST, or `null` when disabled or paused |
+| `last_run.trigger` | `startup` (catch-up run when the app starts) or `schedule` |
+| `last_run.started_at` / `finished_at` | When the latest run started and finished, each with an `_ist` equivalent |
+| `last_run.duration_ms` | How long the latest run took |
+| `last_run.success` / `error` | Outcome of the latest run, with the error text on failure |
+| `last_run.trades_expired` | How many trades the latest run marked as expired |
+| `totals` | Runs, failures, and trades expired since the process started |
+
+Every time is in UTC (ending in `Z`), and the `*_ist` fields give the same instant in Indian Standard Time (`+05:30`). IST is for display only (assumption A18).
+
+`last_run` is `null` until a run has happened, and the run history is kept **in memory**, so it resets when the application restarts and each instance reports only its own runs.
+
+### Section: System
+
+#### `GET /health`: health check
 
 Returns `{"status": "ok"}`.
 
@@ -234,11 +339,11 @@ Returns `{"status": "ok"}`.
 ### Local setup
 
 ```bash
-git clone https://github.com/<your-username>/<your-repo>.git
-cd <your-repo>
+git clone https://github.com/vishrutKulkarni2498/chronos-trade-store.git
+cd chronos-trade-store
 
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+source .venv/bin/activate        # Windows (PowerShell): .venv\Scripts\Activate.ps1
 
 pip install -r requirements-dev.txt   # runtime + test dependencies
 ```
@@ -259,6 +364,21 @@ The API is available at `http://localhost:8000`.
 | `EXPIRY_JOB_INTERVAL_MINUTES` | `60` | How often the expiry job runs |
 | `ENABLE_SCHEDULER` | `true` | Set to `false` to disable the background expiry job |
 
+To watch the scheduler fire quickly, run with a one-minute interval:
+
+```powershell
+# Windows PowerShell
+$env:EXPIRY_JOB_INTERVAL_MINUTES="1"
+uvicorn app.main:app
+```
+
+```bash
+# macOS / Linux
+EXPIRY_JOB_INTERVAL_MINUTES=1 uvicorn app.main:app
+```
+
+Then call `GET /scheduler/status`. `last_run` shows a `startup` run straight away, and a `schedule` run appears about a minute later.
+
 ### Run with Docker
 
 ```bash
@@ -274,11 +394,45 @@ curl -X POST http://localhost:8000/trades \
   -d '{"trade_id":"T1","version":1,"counter_party_id":"CP-1","portfolio_id":"B1","maturity_date":"2030-05-20"}'
 
 curl http://localhost:8000/trades
+curl http://localhost:8000/scheduler/status
 ```
+
+On Windows PowerShell use `curl.exe` instead of `curl` (plain `curl` is an alias for a different command), and put the JSON in a file with `-d "@file.json"` to avoid quoting problems. Or use the Swagger UI at `/docs` and its "Try it out" buttons.
 
 ---
 
-## 9. Running the Tests
+## 9. Sample Test Data
+
+The [`test_data/`](test_data/) folder contains a JSON file of sample trades for trying the API without writing requests by hand.
+
+**Send it to the bulk endpoint**
+
+```bash
+# macOS / Linux / Git Bash
+curl -X POST http://localhost:8000/trades/bulk \
+  -H "Content-Type: application/json" \
+  -d @test_data/trades.json
+```
+
+```powershell
+# Windows PowerShell
+curl.exe -X POST http://localhost:8000/trades/bulk -H "Content-Type: application/json" -d "@test_data/trades.json"
+```
+
+You can also paste the file's content into `POST /trades/bulk` in the Swagger UI.
+
+**Reading the result**
+
+- The response lists one result per trade: `created`, `replaced`, or `rejected` with the reason.
+- Trades that break a rule are reported as `rejected` and the rest are still stored, so you can see each business rule at work in a single request.
+- Trades are processed in file order, so a lower version listed after a higher one for the same trade ID is rejected.
+- Then call `GET /trades` to see what was stored, `GET /trades/{trade_id}` for the version history of one trade, and `GET /trades?expired=true` for expired trades.
+
+Run the file against a fresh database for predictable results. To start clean, stop the app and delete `trades.db`.
+
+---
+
+## 10. Running the Tests
 
 ```bash
 # Run all tests
@@ -292,6 +446,19 @@ pytest --cov=app --cov-fail-under=90
 ```
 
 The tests use an isolated in-memory database and an **injected clock**, so they are deterministic and independent of the current date. `freezegun` is used to verify the real UTC clock, including the midnight rollover.
+
+### Test files
+
+| File | Covers |
+|------|--------|
+| `tests/test_schemas.py` | Input validation |
+| `tests/test_clock.py` | UTC clock, midnight rollover, UTC to IST conversion |
+| `tests/test_repository.py` | Database queries, duplicate keys, bulk expiry update |
+| `tests/test_services.py` | Business rules R1 to R4 |
+| `tests/test_scheduler.py` | Expiry job, scheduler wiring, run recording, status building |
+| `tests/test_api.py` | Endpoints, status codes, bulk behaviour, application lifecycle |
+| `tests/test_api_scheduler_status.py` | `GET /scheduler/status`, including IST fields and resilience |
+| `tests/test_openapi_sections.py` | Endpoints grouped into named sections |
 
 ### Test coverage of the business rules
 
@@ -317,10 +484,18 @@ The tests use an isolated in-memory database and an **injected clock**, so they 
 | Invalid version (0, negative) and invalid date are rejected | A11 |
 | HTTP status codes map correctly (200, 201, 404, 409, 422) | API contract |
 | Bulk endpoint reports per-trade success and failure | A13 |
+| Scheduler registers the expiry job with the configured interval | R4 |
+| Successful and failed job runs are recorded, and totals accumulate | Monitoring |
+| Scheduler status reports enabled, running, next run and interval | Monitoring |
+| A failed startup catch-up run does not stop the API | Monitoring |
+| Status reports not running after shutdown | Monitoring |
+| Scheduler status shows IST beside UTC times, and the same instant | A18 |
+| UTC converts to IST (+05:30), including across midnight | A18 |
+| Endpoints are grouped into named sections in the OpenAPI spec | API structure |
 
 ---
 
-## 10. Test-Driven Development Approach
+## 11. Test-Driven Development Approach
 
 Development followed the **red, green, refactor** cycle:
 
@@ -336,11 +511,11 @@ feat: raise LowerVersionError for lower versions (green)
 refactor: extract version lookup into repository
 ```
 
-Build order: schema and service rule tests first, then the repository, then API endpoints, then the scheduler, then the pipeline.
+Build order: schema and service rule tests first, then the repository, then API endpoints, then the scheduler and its status endpoint, then the pipeline.
 
 ---
 
-## 11. CI/CD Pipeline
+## 12. CI/CD Pipeline
 
 The pipeline is defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) and runs on every **push** and **pull request**.
 
@@ -356,7 +531,7 @@ Because the whole suite runs on every change, it acts as an automated **regressi
 
 ---
 
-## 12. Vulnerability Scanning
+## 13. Vulnerability Scanning
 
 **Tool:** [Trivy](https://github.com/aquasecurity/trivy), run through `aquasecurity/trivy-action`.
 
@@ -392,7 +567,7 @@ To demonstrate the gate, a branch was created that pins a dependency with a know
 
 ---
 
-## 13. Diagrams (PlantUML)
+## 14. Diagrams (PlantUML)
 
 Source files are in [`docs/`](docs/):
 
@@ -406,64 +581,78 @@ To render them, use the PlantUML VS Code extension, or paste the source into [pl
 
 ---
 
-## 14. Project Structure
+## 15. Project Structure
 
 ```
-trade-store/
+chronos-trade-store/
 ├── app/
-│   ├── main.py            # FastAPI app factory and routes
-│   ├── config.py          # Environment-based configuration
-│   ├── database.py        # Engine construction
-│   ├── models.py          # SQLAlchemy model
-│   ├── domain.py          # Trade domain object
-│   ├── schemas.py         # Pydantic request/response schemas
-│   ├── repository.py      # Database access
-│   ├── services.py        # Business rules
-│   ├── exceptions.py      # Domain exceptions
-│   ├── clock.py           # Injectable UTC clock
-│   └── scheduler.py       # Expiry job
+│   ├── main.py                  # App factory: wiring, lifecycle, mounts the routers
+│   ├── routers/
+│   │   ├── submit_trades.py     # Section: POST /trades, POST /trades/bulk
+│   │   ├── read_trades.py       # Section: GET /trades, /trades/{id}, /trades/{id}/versions/{v}
+│   │   ├── scheduler_status.py  # Section: GET /scheduler/status
+│   │   └── tags.py              # Section names shown in Swagger
+│   ├── dependencies.py          # Shared dependencies (service per request)
+│   ├── errors.py                # Domain exception to HTTP status mapping
+│   ├── config.py                # Environment-based configuration
+│   ├── database.py              # Engine construction
+│   ├── models.py                # SQLAlchemy model
+│   ├── domain.py                # Trade domain object
+│   ├── schemas.py               # Pydantic request/response schemas
+│   ├── repository.py            # Database access
+│   ├── services.py              # Business rules
+│   ├── exceptions.py            # Domain exceptions
+│   ├── clock.py                 # Injectable UTC clock, IST conversion
+│   └── scheduler.py             # Expiry job, run monitor, status builder
 ├── tests/
-│   ├── conftest.py        # Fixtures, fake clock
+│   ├── conftest.py              # Fixtures, fake clock
 │   ├── test_clock.py
 │   ├── test_schemas.py
 │   ├── test_repository.py
 │   ├── test_services.py
 │   ├── test_scheduler.py
-│   └── test_api.py
-├── docs/                  # PlantUML diagrams
+│   ├── test_api.py
+│   ├── test_api_scheduler_status.py
+│   └── test_openapi_sections.py
+├── sample_test_data/                   # Sample trades (JSON) for trying the API
+├── docs/                        # PlantUML diagrams
 ├── .github/workflows/ci.yml
 ├── Dockerfile
-├── requirements.txt       # Runtime dependencies (pinned)
-├── requirements-dev.txt   # Test dependencies
+├── requirements.txt             # Runtime dependencies (pinned)
+├── requirements-dev.txt         # Test dependencies
 ├── pytest.ini
-├── .trivyignore           # Justified vulnerability suppressions (empty by default)
+├── .trivyignore                 # Justified vulnerability suppressions (empty by default)
 └── README.md
 ```
 
 ---
 
-## 15. Known Limitations
+## 16. Known Limitations
 
 - **No authentication or authorisation** (A16).
 - **SQLite default** is suited to development. Use PostgreSQL or similar for real concurrent load.
+- **Version check is read-then-write.** Two requests carrying *different* versions of the same trade at the very same instant can both pass the lower-version check, because the primary key only stops identical (`trade_id`, `version`) pairs. A per-trade lock (for example `SELECT ... FOR UPDATE` on PostgreSQL) would close this gap.
+- **Replacing a same-version record overwrites it** with no audit trail of the previous values.
 - **Expiry granularity is by date**, not time of day. A trade is expired from the day after its maturity date.
-- **Bulk endpoint is synchronous.** Very large batches could be slow within one request.
+- **Bulk endpoint is synchronous.** Very large batches could be slow within one request, and each trade is committed separately.
+- **List endpoints are not paginated.**
 - **Single-instance scheduler.** If the API runs on several instances, each would run the expiry job. It is idempotent, so this is safe but redundant.
+- **Scheduler status is per process and in memory.** It resets on restart, and with several instances each reports only its own runs. A shared store (a database table or metrics system) would fix this.
 
 ---
 
-## 16. Future Improvements
+## 17. Future Improvements
 
 - Add authentication (API keys or OAuth2)
+- Add per-trade locking to close the concurrent-version gap, and an audit table for replaced records
 - Ingest trades through a message queue (Kafka, RabbitMQ) for high-volume and asynchronous transmission
-- Move the expiry job to a dedicated worker or database-level scheduled task
+- Move the expiry job to a dedicated worker or database-level scheduled task, and persist its run history
 - Add pagination and richer filtering to list endpoints
 - Add structured logging, metrics, and tracing
-- Add database migrations (Alembic)
 - Add a CD stage that deploys the Docker image to a hosting environment
 
 ---
 
 ## Author
 
-`Vishrut Kulkarni`
+Vishrut Kulkarni

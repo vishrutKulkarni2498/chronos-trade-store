@@ -1,5 +1,5 @@
 """Request/response schemas (API contract and input validation, assumption A11)."""
-from datetime import date
+from datetime import date, datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -54,3 +54,34 @@ class BulkSummary(BaseModel):
 class BulkResponse(BaseModel):
     summary: BulkSummary
     results: list[BulkItemResult]
+
+
+class RunRecordOut(BaseModel):
+    trigger: str
+    started_at: datetime
+    started_at_ist: datetime
+    finished_at: datetime
+    finished_at_ist: datetime
+    duration_ms: int
+    success: bool
+    trades_expired: int
+    error: Optional[str] = None
+
+
+class SchedulerTotals(BaseModel):
+    runs: int
+    failures: int
+    trades_expired: int
+
+
+class SchedulerStatusOut(BaseModel):
+    enabled: bool
+    running: bool
+    interval_minutes: int
+    job_id: str
+    current_time_utc: datetime
+    current_time_ist: datetime
+    next_run_time: Optional[datetime] = None
+    next_run_time_ist: Optional[datetime] = None
+    last_run: Optional[RunRecordOut] = None
+    totals: SchedulerTotals 

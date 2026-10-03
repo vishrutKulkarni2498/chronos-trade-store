@@ -1,6 +1,10 @@
 __pycache__/
 *.pyc
+
+# Virtual environment
 .venv/
+
+# Cache and coverage files
 .pytest_cache/
 .coverage
 coverage.xml
